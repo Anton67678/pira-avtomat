@@ -408,6 +408,71 @@ header {
   #left-panel { border-right:none; border-bottom:1px solid var(--border); }
 }
 </style>
+
+<!-- PYRAMID NETWORK API CLIENT -->
+<script>
+(function(){
+'use strict';
+const PN_API = 'https://innovative-optimism-production-038d.up.railway.app/api/v1';
+let _session = null, _moves = [], _token = null;
+
+function getToken() {
+  if (_token) return _token;
+  _token = localStorage.getItem('pyramid_access_token');
+  return _token;
+}
+async function apiCall(path, body, method) {
+  method = method || 'POST';
+  const token = getToken();
+  const res = await fetch(PN_API + path, {
+    method, credentials: 'include',
+    headers: { 'Content-Type': 'application/json', ...(token ? {'Authorization':'Bearer '+token} : {}) },
+    body: body ? JSON.stringify(body) : undefined
+  });
+  if (!res.ok) { const e = await res.json().catch(()=>({})); throw Object.assign(new Error(e.message||'API error'),{status:res.status}); }
+  return res.json();
+}
+window.PyramidAPI = {
+  async startGame() {
+    if (!getToken()) return null;
+    try {
+      _moves = []; _session = null;
+      const res = await apiCall('/game/automat/start');
+      _session = { session_id: res.session_id, deck_hash: res.deck_hash };
+      return res.deck_hash;
+    } catch(e) { console.warn('[PN] startGame:', e.message); return null; }
+  },
+  logMove(m) {
+    _moves.push({...m, ts: Date.now()});
+    if (_moves.length % 50 === 0) PyramidAPI._flush();
+  },
+  async _flush() {
+    if (!_session || !_moves.length) return;
+    const batch = _moves.splice(0);
+    try { await apiCall('/game/automat/move', { session_id: _session.session_id, moves: batch }); }
+    catch(e) { _moves = [...batch, ..._moves]; }
+  },
+  async reportWin(stake, payout) {
+    if (!_session) return null;
+    await PyramidAPI._flush();
+    try {
+      const res = await apiCall('/game/automat/win', { session_id: _session.session_id, stake: stake||0, payout: payout||0 });
+      console.info('[PN] Block mined! +' + res.pyra_reward + ' PYRA');
+      _session = null; _moves = [];
+      // Обновить баланс в localStorage для отображения
+      if (res.pyra_balance !== undefined) localStorage.setItem('pn_pyra_balance', res.pyra_balance);
+      return res;
+    } catch(e) { console.warn('[PN] reportWin:', e.message); return null; }
+  },
+  async abandon() {
+    if (!_session) return;
+    try { await apiCall('/game/automat/abandon', { session_id: _session.session_id }); } catch(e){}
+    _session = null; _moves = [];
+  }
+};
+console.info('[PN] API Client loaded');
+})();
+</script>
 </head>
 <body>
 
@@ -1842,6 +1907,8 @@ function startRound() {
   pyrStreak   = 0;
 
   deckSeed = Date.now() + '-' + Math.random().toString(36).slice(2);
+  // ← PYRAMID NETWORK: начать Provably Fair сессию
+  if (window.PyramidAPI) PyramidAPI.startGame().then(h => { if(h) console.info('[PN] Committed:', h); });
   const fullDeck = shuffle(makeDeck(), deckSeed);
   deckHash = sha256(deckToString(fullDeck) + '|' + deckSeed);
   fullDeckSnapshot = fullDeck.map(c => c.rank + c.suit); // сохраняем расклад
@@ -2243,6 +2310,10 @@ function endRound(allCleared) {
       stake:     roundStake,
     };
     saveBlock(block);
+    // ← PYRAMID NETWORK: отправить победу на сервер
+    if (window.PyramidAPI) PyramidAPI.reportWin(roundStake, payout).then(function(res){
+      if (res && res.is_sacred) alert('🔺 SACRED PYRAMID! Поздравляем!');
+    });
     showBlockMined(block, payout);
     return;
   }
