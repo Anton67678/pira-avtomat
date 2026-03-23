@@ -480,6 +480,15 @@ window.PyramidAPI = {
     if (!_session) return;
     try { await apiCall('/game/automat/abandon', { session_id: _session.session_id }); } catch(e){}
     _session = null; _moves = [];
+  },
+  async reportLoss() {
+    // Записываем проигрыш на сервере (без возврата ставки, total_games++)
+    if (!getToken()) return null;
+    const sid = _session ? _session.session_id : null;
+    _session = null; _moves = [];
+    try {
+      return await apiCall('/game/automat/lose', sid ? { session_id: sid } : {});
+    } catch(e) { console.warn('[PN] reportLoss:', e.message); return null; }
   }
 };
 console.info('[PN] API Client loaded');
@@ -911,12 +920,26 @@ const SLOT_DEFS = [
   { id:'undo',   icon:'↩',  name:'Отмена хода',    slotCost:600,  chargeCost:300, desc:'Откатывает последний ход. До 3 раз за раунд.' },
 ];
 
-// Синхронизация баланса с сервером при загрузке
+// Синхронизация баланса и статистики с сервером при загрузке
 async function syncBalanceFromServer() {
-  if (!window.getToken || !getToken()) return;
+  // Сначала попробовать взять токен из URL-параметра ?token=...
+  try {
+    const urlParams = new URLSearchParams(window.location.search);
+    const urlToken = urlParams.get('token');
+    if (urlToken) {
+      localStorage.setItem('pyramid_access_token', urlToken);
+      _token = urlToken;
+      // Убрать токен из URL чтобы не светился
+      const cleanUrl = window.location.pathname;
+      history.replaceState(null, '', cleanUrl);
+    }
+  } catch(e) {}
+
+  if (!getToken()) return;
   try {
     const token = getToken();
-    const res = await fetch(PN_API + '/me/balance', {
+    // Получить полную статистику (баланс + total_games)
+    const res = await fetch(PN_API + '/game/automat/stats', {
       headers: { 'Authorization': 'Bearer ' + token }
     });
     if (res.ok) {
@@ -925,6 +948,15 @@ async function syncBalanceFromServer() {
         balance = data.points_balance;
         localStorage.setItem('pyramid_balance', balance);
         renderBalance();
+      }
+      if (data.total_games !== undefined) {
+        totalGames = data.total_games;
+        gamesPlayed = data.total_games;
+        localStorage.setItem('pyramid_total_games', totalGames);
+        document.getElementById('bal-games').textContent = totalGames;
+      }
+      if (data.points_balance !== undefined) {
+        document.getElementById('bal-bonus').textContent = formatN(data.points_balance) + ' ●';
       }
     }
   } catch(e) { console.warn('[PN] syncBalance:', e.message); }
@@ -2474,6 +2506,23 @@ function showResult() {
     `<span style="color:rgba(200,168,75,.5)">Seed:</span> <span style="font-family:monospace;font-size:.6rem;word-break:break-all">${deckSeed}</span>`;
   document.getElementById('verify-result').style.display = 'none';
   document.getElementById('result-overlay').classList.add('show');
+
+  // Сообщаем серверу о проигрыше (total_games++ без возврата ставки)
+  if (window.PyramidAPI) {
+    PyramidAPI.reportLoss().then(function(res) {
+      if (res && res.points_balance !== undefined) {
+        balance = res.points_balance;
+        localStorage.setItem('pyramid_balance', balance);
+        renderBalance();
+      }
+      if (res && res.total_games !== undefined) {
+        totalGames = res.total_games;
+        gamesPlayed = res.total_games;
+        localStorage.setItem('pyramid_total_games', totalGames);
+        document.getElementById('bal-games').textContent = totalGames;
+      }
+    }).catch(function(){});
+  }
 }
 
 function verifyFairness() {
@@ -2861,8 +2910,8 @@ async function openStatsPanel() {
   overlay.style.display = 'flex';
   content.innerHTML = 'Загрузка...';
 
-  if (!window.getToken || !getToken()) {
-    content.innerHTML = 'Для просмотра статистики нужно войти через Telegram на главной странице.';
+  if (!getToken()) {
+    content.innerHTML = '<div style="text-align:center;padding:20px;"><a href="https://pyra.com.ru" style="color:#c8a84b;text-decoration:underline;">Войдите через Telegram на главной странице</a> — затем вернитесь сюда через кнопку "▶ Играть"</div>';
     return;
   }
 
