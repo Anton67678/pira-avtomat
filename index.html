@@ -433,12 +433,18 @@ async function apiCall(path, body, method) {
   return res.json();
 }
 window.PyramidAPI = {
-  async startGame() {
+  async startGame(stake) {
     if (!getToken()) return null;
     try {
       _moves = []; _session = null;
-      const res = await apiCall('/game/automat/start');
+      const res = await apiCall('/game/automat/start', { stake: stake || 50 });
       _session = { session_id: res.session_id, deck_hash: res.deck_hash };
+      // Синхронизируем локальный баланс с серверным
+      if (res.points_balance !== undefined) {
+        balance = res.points_balance;
+        localStorage.setItem('pyramid_balance', balance);
+        renderBalance();
+      }
       return res.deck_hash;
     } catch(e) { console.warn('[PN] startGame:', e.message); return null; }
   },
@@ -461,6 +467,12 @@ window.PyramidAPI = {
       _session = null; _moves = [];
       // Обновить баланс в localStorage для отображения
       if (res.pyra_balance !== undefined) localStorage.setItem('pn_pyra_balance', res.pyra_balance);
+      // Синхронизируем баллы с сервером
+      if (res.points_balance !== undefined) {
+        balance = res.points_balance;
+        localStorage.setItem('pyramid_balance', balance);
+        renderBalance();
+      }
       return res;
     } catch(e) { console.warn('[PN] reportWin:', e.message); return null; }
   },
@@ -487,8 +499,24 @@ console.info('[PN] API Client loaded');
       ⛏ Блоки <span id="blocks-count" style="position:absolute;top:-6px;right:-6px;background:var(--gold);color:#1a1a2e;border-radius:50%;width:18px;height:18px;font-size:.65rem;display:flex;align-items:center;justify-content:center;font-weight:700;">0</span>
     </button>
     <button class="btn sm" onclick="showRules()">Правила</button>
+    <button class="btn sm" onclick="openStatsPanel()" id="btn-stats">📊 Стат</button>
   </div>
 </header>
+
+<!-- STATS PANEL -->
+<div id="stats-overlay" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.82);z-index:900;display:none;align-items:center;justify-content:center;">
+  <div style="background:#0f1a15;border:1px solid rgba(200,168,75,.3);border-radius:12px;padding:28px 32px;max-width:480px;width:95%;max-height:85vh;overflow-y:auto;">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:20px;">
+      <div style="font-family:'Playfair Display',serif;font-size:1.1rem;color:#c8a84b;letter-spacing:.1em;">СТАТИСТИКА</div>
+      <button onclick="document.getElementById('stats-overlay').style.display='none'" style="background:none;border:none;color:rgba(200,168,75,.5);font-size:1.2rem;cursor:pointer;">✕</button>
+    </div>
+    <div id="stats-content" style="color:#f2ead8;font-size:.9rem;line-height:1.8;">Загрузка...</div>
+    <div id="stats-milestone" style="margin-top:16px;padding:12px;background:rgba(200,168,75,.07);border-radius:8px;border:1px solid rgba(200,168,75,.2);display:none;">
+      <div style="font-family:'Playfair Display',serif;font-size:.75rem;color:#c8a84b;letter-spacing:.1em;margin-bottom:6px;">🏆 СЛЕДУЮЩАЯ ВЕХА</div>
+      <div id="stats-milestone-text" style="font-size:.85rem;"></div>
+    </div>
+  </div>
+</div>
 
 <div id="balance-bar">
   <div class="bal-item">
@@ -882,6 +910,25 @@ const SLOT_DEFS = [
   { id:'remove', icon:'✂️', name:'Снять карту',    slotCost:1000, chargeCost:500, desc:'Убирает одну открытую карту без пары.' },
   { id:'undo',   icon:'↩',  name:'Отмена хода',    slotCost:600,  chargeCost:300, desc:'Откатывает последний ход. До 3 раз за раунд.' },
 ];
+
+// Синхронизация баланса с сервером при загрузке
+async function syncBalanceFromServer() {
+  if (!window.getToken || !getToken()) return;
+  try {
+    const token = getToken();
+    const res = await fetch(PN_API + '/me/balance', {
+      headers: { 'Authorization': 'Bearer ' + token }
+    });
+    if (res.ok) {
+      const data = await res.json();
+      if (data.points_balance !== undefined) {
+        balance = data.points_balance;
+        localStorage.setItem('pyramid_balance', balance);
+        renderBalance();
+      }
+    }
+  } catch(e) { console.warn('[PN] syncBalance:', e.message); }
+}
 
 function loadPersistent() {
   try {
@@ -1886,6 +1933,7 @@ function deckToString(deck) {
 function startRound() {
   if (balance < stake) { setStatus('Недостаточно средств', 'warn'); return; }
 
+  // Оптимистично списываем локально — сервер скорректирует после ответа
   balance -= stake;
   jackpot += Math.floor(stake * 0.05);
   roundStake  = stake;
@@ -1908,7 +1956,7 @@ function startRound() {
 
   deckSeed = Date.now() + '-' + Math.random().toString(36).slice(2);
   // ← PYRAMID NETWORK: начать Provably Fair сессию
-  if (window.PyramidAPI) PyramidAPI.startGame().then(h => { if(h) console.info('[PN] Committed:', h); });
+  if (window.PyramidAPI) PyramidAPI.startGame(roundStake).then(h => { if(h) console.info('[PN] Committed:', h); });
   const fullDeck = shuffle(makeDeck(), deckSeed);
   deckHash = sha256(deckToString(fullDeck) + '|' + deckSeed);
   fullDeckSnapshot = fullDeck.map(c => c.rank + c.suit); // сохраняем расклад
@@ -2804,7 +2852,78 @@ function closeBlocksPanel() {
   document.getElementById('blocks-panel').style.display = 'none';
 }
 
+// ════════════════════════════════════════════════════
+//  STATS PANEL
+// ════════════════════════════════════════════════════
+async function openStatsPanel() {
+  const overlay = document.getElementById('stats-overlay');
+  const content = document.getElementById('stats-content');
+  overlay.style.display = 'flex';
+  content.innerHTML = 'Загрузка...';
+
+  if (!window.getToken || !getToken()) {
+    content.innerHTML = 'Для просмотра статистики нужно войти через Telegram на главной странице.';
+    return;
+  }
+
+  try {
+    const res = await fetch(PN_API + '/game/automat/stats', {
+      headers: { 'Authorization': 'Bearer ' + getToken() }
+    });
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    const s = await res.json();
+
+    const row = (label, val, color) =>
+      `<div style="display:flex;justify-content:space-between;padding:4px 0;border-bottom:1px solid rgba(200,168,75,.08);">
+        <span style="color:rgba(242,234,216,.5);">${label}</span>
+        <span style="font-weight:700;color:${color||'#f2ead8'};">${val}</span>
+      </div>`;
+
+    const games   = s.total_games || 0;
+    const wins    = s.total_wins  || 0;
+    const losses  = games - wins;
+    const roiColor = s.roi_pct >= 0 ? '#6ae8a0' : '#e06060';
+
+    content.innerHTML = `
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:16px;">
+        <div style="text-align:center;padding:10px;background:rgba(200,168,75,.06);border-radius:8px;">
+          <div style="font-size:1.6rem;font-weight:700;color:#c8a84b;">${formatN(games)}</div>
+          <div style="font-size:.65rem;color:rgba(200,168,75,.5);letter-spacing:.1em;">ИГР СЫГРАНО</div>
+        </div>
+        <div style="text-align:center;padding:10px;background:rgba(106,232,160,.06);border-radius:8px;">
+          <div style="font-size:1.6rem;font-weight:700;color:#6ae8a0;">${s.winrate_pct}%</div>
+          <div style="font-size:.65rem;color:rgba(106,232,160,.5);letter-spacing:.1em;">ВИНРЕЙТ</div>
+        </div>
+      </div>
+      ${row('Выигранных партий', formatN(wins), '#6ae8a0')}
+      ${row('Проигранных партий', formatN(losses), '#e06060')}
+      ${row('Блоков PYRA добыто', formatN(s.blocks_mined))}
+      ${row('Средняя сложность', s.avg_difficulty + ' рядов')}
+      ${row('Лучший выигрыш', formatN(s.best_win) + ' ●', '#ffe066')}
+      ${row('Всего поставлено', formatN(s.total_staked) + ' ●')}
+      ${row('Всего выиграно', formatN(s.total_payout) + ' ●')}
+      ${row('ROI', (s.roi_pct >= 0 ? '+' : '') + s.roi_pct + '%', roiColor)}
+      ${row('Сакральных пирамид', formatN(s.sacred_wins), '#c8a84b')}
+      ${row('Баланс PYRA', formatN(s.pyra_balance), '#c8a84b')}
+      ${row('Баланс баллов', formatN(s.points_balance) + ' ●', '#7ecfff')}
+    `;
+
+    // Milestone
+    const milestoneEl = document.getElementById('stats-milestone');
+    const milestoneText = document.getElementById('stats-milestone-text');
+    if (s.next_milestone) {
+      const left = s.next_milestone - games;
+      milestoneEl.style.display = 'block';
+      milestoneText.innerHTML = `До <b style="color:#c8a84b">${formatN(s.next_milestone)}</b> партий осталось ещё <b>${formatN(left)}</b>. За достижение вехи игрок получит +${s.next_milestone >= 200 ? '500' : s.next_milestone >= 100 ? '250' : '100'}● бонус.`;
+    }
+  } catch(e) {
+    content.innerHTML = 'Ошибка загрузки статистики: ' + e.message;
+  }
+}
+
 init();
+// Синхронизация баланса с сервера при загрузке (если есть токен)
+syncBalanceFromServer();
 </script>
 </body>
 </html>
