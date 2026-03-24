@@ -467,11 +467,16 @@ window.PyramidAPI = {
       _session = null; _moves = [];
       // Обновить баланс в localStorage для отображения
       if (res.pyra_balance !== undefined) localStorage.setItem('pn_pyra_balance', res.pyra_balance);
-      // Синхронизируем баллы с сервером
       if (res.points_balance !== undefined) {
         balance = res.points_balance;
         localStorage.setItem('pyramid_balance', balance);
         renderBalance();
+        document.getElementById('bal-bonus').textContent = formatN(balance) + ' ●';
+      }
+      if (res.total_games !== undefined) {
+        totalGames = res.total_games;
+        localStorage.setItem('pyramid_total_games', totalGames);
+        document.getElementById('bal-games').textContent = totalGames;
       }
       return res;
     } catch(e) { console.warn('[PN] reportWin:', e.message); return null; }
@@ -922,42 +927,44 @@ const SLOT_DEFS = [
 
 // Синхронизация баланса и статистики с сервером при загрузке
 async function syncBalanceFromServer() {
-  // Сначала попробовать взять токен из URL-параметра ?token=...
+  // 1. Читаем токен из URL ?token=... если есть
   try {
     const urlParams = new URLSearchParams(window.location.search);
     const urlToken = urlParams.get('token');
     if (urlToken) {
       localStorage.setItem('pyramid_access_token', urlToken);
       _token = urlToken;
-      // Убрать токен из URL чтобы не светился
-      const cleanUrl = window.location.pathname;
-      history.replaceState(null, '', cleanUrl);
+      history.replaceState(null, '', window.location.pathname);
     }
   } catch(e) {}
 
-  if (!getToken()) return;
+  if (!getToken()) return; // нет токена — работаем в offline-режиме
+
   try {
-    const token = getToken();
-    // Получить полную статистику (баланс + total_games)
-    const res = await fetch(PN_API + '/game/automat/stats', {
-      headers: { 'Authorization': 'Bearer ' + token }
+    // 2. Быстрый /me: баланс + total_games
+    const res = await fetch(PN_API + '/me', {
+      headers: { 'Authorization': 'Bearer ' + getToken() }
     });
-    if (res.ok) {
-      const data = await res.json();
-      if (data.points_balance !== undefined) {
-        balance = data.points_balance;
-        localStorage.setItem('pyramid_balance', balance);
-        renderBalance();
+    if (!res.ok) {
+      if (res.status === 401) {
+        // Токен устарел — сбрасываем
+        localStorage.removeItem('pyramid_access_token');
+        _token = null;
       }
-      if (data.total_games !== undefined) {
-        totalGames = data.total_games;
-        gamesPlayed = data.total_games;
-        localStorage.setItem('pyramid_total_games', totalGames);
-        document.getElementById('bal-games').textContent = totalGames;
-      }
-      if (data.points_balance !== undefined) {
-        document.getElementById('bal-bonus').textContent = formatN(data.points_balance) + ' ●';
-      }
+      return;
+    }
+    const data = await res.json();
+    const u = data.user || data;
+    if (u.points_balance !== undefined) {
+      balance = u.points_balance;
+      localStorage.setItem('pyramid_balance', balance);
+      renderBalance();
+      document.getElementById('bal-bonus').textContent = formatN(balance) + ' ●';
+    }
+    if (u.total_games !== undefined) {
+      totalGames = parseInt(u.total_games, 10);
+      localStorage.setItem('pyramid_total_games', totalGames);
+      document.getElementById('bal-games').textContent = totalGames;
     }
   } catch(e) { console.warn('[PN] syncBalance:', e.message); }
 }
@@ -2022,15 +2029,8 @@ function startRound() {
 
   phase = 'playing';
   gamesPlayed++;
-  totalGames++;
+  // totalGames не инкрементируем локально — только сервер ведёт счёт
   savePersistent();
-  // Milestone бонус: каждые 100 раздач +500 баллов
-  const milestone = Math.floor(totalGames / 100);
-  if (milestone > lastMilestone) {
-    lastMilestone = milestone;
-    savePersistent();
-    setTimeout(() => awardBonus(500, `🎖 ${totalGames} раздач!`), 800);
-  }
 
   renderBalance();
   renderJackpot();
@@ -2042,7 +2042,7 @@ function startRound() {
   renderComboPanel();
   renderArsenal();
   document.getElementById('bal-stake').textContent = formatN(roundStake);
-  document.getElementById('bal-games').textContent = gamesPlayed;
+  document.getElementById('bal-games').textContent = totalGames; // серверное значение
   setPhaseBanner('Убирайте пары одинакового ранга');
   setStatus('Карта колоды открыта · ищите пары одинакового ранга', 'info');
 }
@@ -2916,9 +2916,17 @@ async function openStatsPanel() {
   }
 
   try {
+    const controller = new AbortController();
+    const tid = setTimeout(() => controller.abort(), 8000);
     const res = await fetch(PN_API + '/game/automat/stats', {
-      headers: { 'Authorization': 'Bearer ' + getToken() }
+      headers: { 'Authorization': 'Bearer ' + getToken() },
+      signal: controller.signal
     });
+    clearTimeout(tid);
+    if (res.status === 401) {
+      content.innerHTML = '<div style="text-align:center;padding:20px;">Сессия устарела. <a href="https://pyra.com.ru" style="color:#c8a84b;text-decoration:underline;">Войдите через Telegram на главной странице</a></div>';
+      return;
+    }
     if (!res.ok) throw new Error('HTTP ' + res.status);
     const s = await res.json();
 
@@ -2966,7 +2974,11 @@ async function openStatsPanel() {
       milestoneText.innerHTML = `До <b style="color:#c8a84b">${formatN(s.next_milestone)}</b> партий осталось ещё <b>${formatN(left)}</b>. За достижение вехи игрок получит +${s.next_milestone >= 200 ? '500' : s.next_milestone >= 100 ? '250' : '100'}● бонус.`;
     }
   } catch(e) {
-    content.innerHTML = 'Ошибка загрузки статистики: ' + e.message;
+    if (e.name === 'AbortError') {
+      content.innerHTML = 'Ошибка: сервер не ответил (таймаут). Попробуйте позже.';
+    } else {
+      content.innerHTML = 'Ошибка загрузки статистики: ' + e.message;
+    }
   }
 }
 
