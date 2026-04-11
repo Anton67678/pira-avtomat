@@ -2868,7 +2868,48 @@ function renderControls() {
 function renderBalance() {
   document.getElementById('bal-balance').textContent = formatN(balance);
   savePersistent();
+  syncBalanceToParent();
+  broadcastBalance();
 }
+
+function syncBalanceToParent() {
+  try {
+    window.parent.postMessage({
+      type: 'PYRAMID_BALANCE_SYNC',
+      pyra_balance: localStorage.getItem('pn_pyra_balance') || '0',
+      points_balance: balance
+    }, 'https://pyra.com.ru');
+  } catch(e) {}
+}
+
+// BroadcastChannel для синхронизации между вкладками
+let bc;
+try {
+  bc = new BroadcastChannel('pyramid_balance');
+  bc.onmessage = function(e) {
+    if (e.data.type === 'PYRAMID_BALANCE_SYNC') {
+      localStorage.setItem('pn_pyra_balance', e.data.pyra_balance || '0');
+      localStorage.setItem('pyramid_balance', e.data.points_balance || '0');
+    }
+  };
+} catch(e) {}
+
+function broadcastBalance() {
+  if (bc) {
+    bc.postMessage({
+      type: 'PYRAMID_BALANCE_SYNC',
+      pyra_balance: localStorage.getItem('pn_pyra_balance') || '0',
+      points_balance: balance
+    });
+  }
+}
+
+window.addEventListener('message', function(e) {
+  if (e.origin !== 'https://pyra.com.ru') return;
+  if (e.data.type === 'PYRAMID_BALANCE_REQUEST') {
+    syncBalanceToParent();
+  }
+});
 
 function renderJackpot() {
   document.getElementById('jackpot-val').textContent = formatN(jackpot);
