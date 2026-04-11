@@ -956,7 +956,8 @@ async function syncBalanceFromServer() {
     const data = await res.json();
     const u = data.user || data;
     if (u.points_balance !== undefined) {
-      balance = u.points_balance;
+      // Используем максимум из сервера и локального (защита от рассинхрона)
+      balance = Math.max(u.points_balance, balance);
       localStorage.setItem('pyramid_balance', balance);
       renderBalance();
       document.getElementById('bal-bonus').textContent = formatN(balance) + ' ●';
