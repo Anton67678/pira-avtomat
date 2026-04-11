@@ -2883,7 +2883,7 @@ function syncBalanceToParent() {
       type: 'PYRAMID_BALANCE_SYNC',
       pyra_balance: localStorage.getItem('pn_pyra_balance') || '0',
       points_balance: balance
-    }, 'https://pyra.com.ru');
+    }, '*');
   } catch(e) {}
 }
 
