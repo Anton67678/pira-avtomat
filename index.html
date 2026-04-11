@@ -958,7 +958,7 @@ async function syncBalanceFromServer() {
     const u = data.user || data;
     if (u.points_balance !== undefined) {
       // Используем максимум из сервера и локального (защита от рассинхрона)
-      balance = Math.max(u.points_balance, balance);
+      balance = Math.max(parseInt(u.points_balance, 10) || 0, balance);
       localStorage.setItem('pyramid_balance', balance);
       renderBalance();
       document.getElementById('bal-bonus').textContent = formatN(balance) + ' ●';
@@ -1097,6 +1097,8 @@ function init() {
   renderRowProgress();
   renderBlockCount();
   renderArsenal();
+  // Синхронизировать баланс с сервером при загрузке
+  setTimeout(syncBalanceToServer, 1000);
 }
 
 function buildBetTable() {
@@ -2872,6 +2874,7 @@ function renderBalance() {
   savePersistent();
   syncBalanceToParent();
   broadcastBalance();
+  syncBalanceToServer();
 }
 
 function syncBalanceToParent() {
@@ -2903,6 +2906,32 @@ function broadcastBalance() {
       pyra_balance: localStorage.getItem('pn_pyra_balance') || '0',
       points_balance: balance
     });
+  }
+}
+
+// Синхронизация баланса на сервер
+async function syncBalanceToServer() {
+  const token = getToken();
+  if (!token) return;
+  try {
+    const res = await fetch(PN_API + '/me/balance/sync', {
+      method: 'POST',
+      credentials: 'include',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': 'Bearer ' + token
+      },
+      body: JSON.stringify({
+        points_balance: balance,
+        pyra_balance: parseInt(localStorage.getItem('pn_pyra_balance') || '0')
+      })
+    });
+    if (res.ok) {
+      const data = await res.json();
+      console.info('[PN] Balance synced to server:', data);
+    }
+  } catch(e) {
+    console.warn('[PN] syncBalanceToServer:', e.message);
   }
 }
 
