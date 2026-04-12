@@ -421,6 +421,8 @@ function getToken() {
   _token = localStorage.getItem('pyramid_access_token');
   return _token;
 }
+window.getToken = getToken; // Сделать глобальной для отладки
+window._token = _token; // И _token тоже
 async function apiCall(path, body, method) {
   method = method || 'POST';
   const token = getToken();
