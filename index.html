@@ -3060,6 +3060,8 @@ init();
 (async () => {
   await syncBalanceToServer(); // Сначала отправляем
   await syncBalanceFromServer(); // Потом читаем (сервер уже знает наш баланс)
+  renderBalance(); // Перерисовать и разослать баланс всем
+  broadcastBalance(); // Явно рассылаем всем вкладкам
 })();
 </script>
 </body>
