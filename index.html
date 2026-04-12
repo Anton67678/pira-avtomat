@@ -414,6 +414,7 @@ header {
 (function(){
 'use strict';
 const PN_API = 'https://innovative-optimism-production-038d.up.railway.app/api/v1';
+window.PN_API = PN_API; // Глобальная для sync функций
 let _session = null, _moves = [], _token = null;
 
 function getToken() {
@@ -868,6 +869,7 @@ const CARD_PROB = {
 //  STATE
 // ════════════════════════════════════════════════════
 let balance    = 1000;
+window.balance = balance; // Глобальная для sync функций
 let jackpot    = 0;
 let gamesPlayed = 0;
 let stake      = 50;
@@ -945,7 +947,7 @@ async function syncBalanceFromServer() {
 
   try {
     // Получаем баланс с сервера
-    const res = await fetch(PN_API + '/me', {
+    const res = await fetch(window.PN_API + '/me', {
       headers: { 'Authorization': 'Bearer ' + getToken() }
     });
     if (!res.ok) {
@@ -2916,7 +2918,7 @@ window.syncBalanceToServer = async function syncBalanceToServer() {
   const token = getToken();
   if (!token) return;
   try {
-    const res = await fetch(PN_API + '/me/balance/sync', {
+    const res = await fetch(window.PN_API + '/me/balance/sync', {
       method: 'POST',
       credentials: 'include',
       headers: {
@@ -2924,21 +2926,13 @@ window.syncBalanceToServer = async function syncBalanceToServer() {
         'Authorization': 'Bearer ' + token
       },
       body: JSON.stringify({
-        points_balance: balance,
+        points_balance: parseInt(localStorage.getItem('pyramid_balance') || '0'),
         pyra_balance: parseInt(localStorage.getItem('pn_pyra_balance') || '0')
       })
     });
     if (res.ok) {
       const data = await res.json();
       console.info('[PN] Balance synced to server:', data);
-      // Обновляем локальный баланс из ответа сервера (сервер возвращает max)
-      if (data.points_balance !== undefined) {
-        balance = data.points_balance;
-        localStorage.setItem('pyramid_balance', balance);
-      }
-      if (data.pyra_balance !== undefined) {
-        localStorage.setItem('pn_pyra_balance', data.pyra_balance);
-      }
     }
   } catch(e) {
     console.warn('[PN] syncBalanceToServer:', e.message);
