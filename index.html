@@ -487,12 +487,24 @@ window.PyramidAPI = {
     _session = null; _moves = [];
   },
   async reportLoss() {
-    // Записываем проигрыш на сервере (без возврата ставки, total_games++)
-    if (!getToken()) return null;
     const sid = _session ? _session.session_id : null;
     _session = null; _moves = [];
+    if (!getToken()) return null;
     try {
-      return await apiCall('/game/automat/lose', sid ? { session_id: sid } : {});
+      const res = await apiCall('/game/automat/lose', sid ? { session_id: sid } : {});
+      // Обновить локальный баланс из ответа сервера
+      if (res && res.points_balance !== undefined) {
+        balance = res.points_balance;
+        localStorage.setItem('pyramid_balance', balance);
+        renderBalance();
+        document.getElementById('bal-bonus').textContent = formatN(balance) + ' ●';
+      }
+      if (res && res.total_games !== undefined) {
+        totalGames = res.total_games;
+        localStorage.setItem('pyramid_total_games', totalGames);
+        document.getElementById('bal-games').textContent = totalGames;
+      }
+      return res;
     } catch(e) { console.warn('[PN] reportLoss:', e.message); return null; }
   }
 };
@@ -928,21 +940,10 @@ const SLOT_DEFS = [
 
 // Синхронизация баланса и статистики с сервером при загрузке
 async function syncBalanceFromServer() {
-  // 1. Читаем токен из URL ?token=... если есть
-  try {
-    const urlParams = new URLSearchParams(window.location.search);
-    const urlToken = urlParams.get('token');
-    if (urlToken) {
-      localStorage.setItem('pyramid_access_token', urlToken);
-      _token = urlToken;
-      history.replaceState(null, '', window.location.pathname);
-    }
-  } catch(e) {}
-
   if (!getToken()) return; // нет токена — работаем в offline-режиме
 
   try {
-    // 2. Быстрый /me: баланс + total_games
+    // Получаем баланс с сервера
     const res = await fetch(PN_API + '/me', {
       headers: { 'Authorization': 'Bearer ' + getToken() }
     });
@@ -2929,6 +2930,14 @@ async function syncBalanceToServer() {
     if (res.ok) {
       const data = await res.json();
       console.info('[PN] Balance synced to server:', data);
+      // Обновляем локальный баланс из ответа сервера (сервер возвращает max)
+      if (data.points_balance !== undefined) {
+        balance = data.points_balance;
+        localStorage.setItem('pyramid_balance', balance);
+      }
+      if (data.pyra_balance !== undefined) {
+        localStorage.setItem('pn_pyra_balance', data.pyra_balance);
+      }
     }
   } catch(e) {
     console.warn('[PN] syncBalanceToServer:', e.message);
@@ -3055,13 +3064,26 @@ async function openStatsPanel() {
 }
 
 init();
-// Сначала отправляем локальный баланс на сервер (он может быть больше серверного)
-// Затем читаем с сервера и берём максимум
+// Сначала извлекаем токен из URL, затем синхронизируем
 (async () => {
-  await syncBalanceToServer(); // Сначала отправляем
-  await syncBalanceFromServer(); // Потом читаем (сервер уже знает наш баланс)
-  renderBalance(); // Перерисовать и разослать баланс всем
-  broadcastBalance(); // Явно рассылаем всем вкладкам
+  // Извлекаем токен из URL если есть
+  try {
+    const urlParams = new URLSearchParams(window.location.search);
+    const urlToken = urlParams.get('token');
+    if (urlToken) {
+      localStorage.setItem('pyramid_access_token', urlToken);
+      _token = urlToken;
+      history.replaceState(null, '', window.location.pathname);
+    }
+  } catch(e) {}
+  
+  // Сначала отправляем локальный баланс на сервер
+  await syncBalanceToServer();
+  // Потом читаем с сервера и берём максимум
+  await syncBalanceFromServer();
+  // Перерисовать и разослать баланс всем
+  renderBalance();
+  broadcastBalance();
 })();
 </script>
 </body>
