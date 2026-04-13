@@ -436,13 +436,12 @@ async function apiCall(path, body, method) {
 }
 window.PyramidAPI = {
   async startGame(stake) {
-    if (!getToken()) return null;
+    _moves = []; _session = null;
+    const endpoint = getToken() ? '/game/automat/start' : '/game/automat/start-anonymous';
     try {
-      _moves = []; _session = null;
-      const res = await apiCall('/game/automat/start', { stake: stake || 50 });
-      _session = { session_id: res.session_id, deck_hash: res.deck_hash };
-      // Синхронизируем локальный баланс с серверным
-      if (res.points_balance !== undefined) {
+      const res = await apiCall(endpoint, { stake: stake || 50 });
+      _session = { session_id: res.session_id, deck_hash: res.deck_hash, anonymous: res.anonymous };
+      if (res.points_balance !== undefined && !res.anonymous) {
         balance = res.points_balance;
         localStorage.setItem('pyramid_balance', balance);
         renderBalance();
@@ -456,8 +455,9 @@ window.PyramidAPI = {
   },
   async _flush() {
     if (!_session || !_moves.length) return;
+    const endpoint = _session.anonymous ? '/game/automat/anonymous-move' : '/game/automat/move';
     const batch = _moves.splice(0);
-    try { await apiCall('/game/automat/move', { session_id: _session.session_id, moves: batch }); }
+    try { await apiCall(endpoint, { session_id: _session.session_id, moves: batch }); }
     catch(e) { _moves = [...batch, ..._moves]; }
   },
   async reportWin(stake, payout) {
