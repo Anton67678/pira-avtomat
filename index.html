@@ -1002,6 +1002,48 @@ function getMinedbBlocks() {
   catch(e) { return []; }
 }
 
+async function syncBlocksFromServer() {
+  if (!getToken()) return;
+  try {
+    const res = await fetch(window.PN_API + '/me/blocks', {
+      headers: { 'Authorization': 'Bearer ' + getToken() }
+    });
+    if (!res.ok) return;
+    const data = await res.json();
+    const serverBlocks = data.blocks || [];
+    
+    if (serverBlocks.length === 0) return;
+    
+    const localBlocks = getMinedbBlocks();
+    const localSeeds = new Set(localBlocks.map(b => b.seed));
+    
+    const newBlocks = serverBlocks
+      .filter(sb => !localSeeds.has(sb.seed))
+      .map(sb => ({
+        index: localBlocks.length + 1,
+        timestamp: new Date(sb.mined_at).getTime(),
+        seed: sb.seed,
+        deck_hash: sb.deck_hash,
+        deck: [], // deck not stored in blocks table, need to fetch separately if needed
+        moves: [],
+        rows: 7,
+        payout: sb.payout || 0,
+        stake: sb.stake || 0,
+        difficulty: sb.difficulty,
+        is_sacred: sb.is_sacred,
+        pyra_reward: sb.pyra_reward
+      }));
+    
+    if (newBlocks.length > 0) {
+      const merged = [...newBlocks, ...localBlocks];
+      localStorage.setItem(BLOCKS_KEY, JSON.stringify(merged));
+      renderBlockCount();
+      renderBlocksPanel();
+      console.log('[PN] Synced', newBlocks.length, 'blocks from server');
+    }
+  } catch(e) { console.warn('[PN] syncBlocks:', e.message); }
+}
+
 function saveBlock(block) {
   const blocks = getMinedbBlocks();
   blocks.unshift(block); // новые блоки в начало
@@ -1101,8 +1143,9 @@ function init() {
   renderRowProgress();
   renderBlockCount();
   renderArsenal();
-  // Синхронизировать баланс с сервером при загрузке
+  // Синхронизировать баланс и блоки с сервером при загрузке
   setTimeout(syncBalanceToServer, 1000);
+  setTimeout(syncBlocksFromServer, 1500);
 }
 
 function buildBetTable() {
